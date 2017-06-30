@@ -7,7 +7,7 @@ import math
 import numpy as np
 import pandas as pd
 
-from misc import fidx
+from .misc import fidx
 
 
 ##################
