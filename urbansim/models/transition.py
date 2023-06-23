@@ -221,11 +221,32 @@ class TabularGrowthRateTransition(object):
     accounting_column: string, optional
         Name of column with accounting totals/quanties to apply towards the control. If not provided
         then row counts will be used for accounting.
+    sampling_threshold: int, optional, default None
+        If provided, defines the minimum # of agents, e.g. households, that must be present to 
+        sample w/in a semgent. If the threshold is not met the segment constraint will be relaxed
+        and agents would be sampled from a broader pool to match the target.
+    sampling_hierarchy: list of str, optional, default empty list
+        If provided, defines the order in which segment constraints will be relaxed. Should be defined such that
+        less detailed to more detailed segments proceed from left to right, e.g.: ['county', 'city', 'taz'].
+        If not provided, but a 'sampling_threshold' is provided, then the entire pool of agents will be used.
+    keep_outside: bool, optional, default False
+        If True, agents whose attributes fall outside the segments defined in the controls, will be retained.
+        This is intended for cases where the control totals are intended to be applied to a subset of the data.
+        
     """
-    def __init__(self, growth_rates, rates_column, accounting_column=None):
+    def __init__(self, 
+                growth_rates, 
+                rates_column, 
+                accounting_column=None, 
+                sampling_threshold=None, 
+                sampling_hierarchy=[],
+                keep_outside=False):
         self.growth_rates = growth_rates
         self.rates_column = rates_column
         self.accounting_column = accounting_column
+        self.sampling_threshold = sampling_threshold
+        self.sampling_hierarchy = sampling_hierarchy
+        self.keep_outside = keep_outside
 
     @property
     def _config_table(self):
@@ -288,6 +309,10 @@ class TabularGrowthRateTransition(object):
         if year not in self._config_table.index:
             raise ValueError('No targets for given year: {}'.format(year))
 
+        # make sure indexes are unique
+        if not data.index.is_unique:
+            raise ValueError('Index has duplicates')
+
         # want this to be a DataFrame
         year_config = self._config_table.loc[[year]]
         logger.debug('transitioning {} segments'.format(len(year_config)))
@@ -296,19 +321,20 @@ class TabularGrowthRateTransition(object):
         added_indexes = []
         copied_indexes = []
         removed_indexes = []
+        queried_indexes = []
 
         # since we're looping over discrete segments we need to track
         # out here where their new indexes will begin
         starting_index = data.index.values.max() + 1
-
+        
         for _, row in year_config.iterrows():
+            
+            # inital query for agents
             subset = util.filter_table(data, row, ignore={self._config_column})
+            subset_cnt = len(subset)
+            queried_indexes.append(subset.index)
 
-            # Do not run on segment if it is empty
-            if len(subset) == 0:
-                logger.debug('empty segment encountered')
-                continue
-
+            # estimate amounts needed
             if self.accounting_column is None:
                 nrows = self._calc_nrows(len(subset), row[self._config_column])
             else:
@@ -316,17 +342,67 @@ class TabularGrowthRateTransition(object):
                     subset[self.accounting_column].sum(),
                     row[self._config_column])
 
-            updated, added, copied, removed = \
-                add_or_remove_rows(subset, nrows, starting_index, self.accounting_column)
-            if nrows > 0:
-                # only update the starting index if rows were added
-                starting_index = starting_index + nrows
-            segments.append(updated)
-            added_indexes.append(added)
-            copied_indexes.append(copied)
-            removed_indexes.append(removed)
+            if nrows < 0:
+                # REMOVE AGENTS
+                if subset_cnt == 0:
+                    logger.debug('empty segment encountered')
+                    continue
+                updated, removed = remove_rows(subset, nrows, accounting_column=self.accounting_column)
+                segments.append(updated)
+                removed_indexes.append(removed)
+
+            else:
+                # add existing
+                segments.append(subset)
+
+                if nrows > 0: 
+                    # ADD agents 
+                    # ...do not run on segment if it is empty if not using sampling hierarchy
+                    if subset_cnt == 0 and self.sampling_threshold is None:
+                        logger.debug('empty segment encountered')
+                        continue
+                    logger.debug('start: adding {} rows in transition model'.format(nrows))
+                    
+                    # pool of agents to sample from
+                    sample_from = subset
+
+                    if self.sampling_threshold is not None:
+                        ignore_cols = [self._config_column]
+                        curr_seg_cols = [[c] if not isinstance(c, (list, tuple)) else c for c in self.sampling_hierarchy]
+
+                        while len(sample_from) < self.sampling_threshold:
+                            # use available segments
+                            ignore_cols += curr_seg_cols.pop()
+                            sample_from = util.filter_table(data, row, ignore=set(ignore_cols))
+                            
+                        # update segment cols on agents to reflect the control
+                        for col in self.sampling_hierarchy:
+                            sample_from = sample_from.copy()
+                            sample_from[col] = row[col]
+
+                    # sample rows to add
+                    new_rows = sample_rows(nrows, sample_from, accounting_column=self.accounting_column)
+                    copied_index = new_rows.index
+                    added_index = pd.Index(np.arange(
+                        starting_index, starting_index + len(new_rows.index), dtype=np.int))
+                    new_rows.index = added_index
+                    logger.debug(
+                        'finish: added {} rows in transition model'.format(len(new_rows)))
+                    segments.append(new_rows)
+                    copied_indexes.append(copied_index)
+                    added_indexes.append(added_index)
+                    
+                    # update the starting index
+                    starting_index += nrows
+
+        if self.keep_outside:
+            # keep rows not subject to the segmentation
+            queried_indexes = util.concat_indexes(queried_indexes)
+            segments.append(data[~data.index.isin(queried_indexes)])
 
         updated = pd.concat(segments)
+        if data.index.name is not None:
+            updated.index.name = data.index.name
         added_indexes = util.concat_indexes(added_indexes)
         copied_indexes = util.concat_indexes(copied_indexes)
         removed_indexes = util.concat_indexes(removed_indexes)
@@ -355,11 +431,32 @@ class TabularTotalsTransition(TabularGrowthRateTransition):
     accounting_column: string, optional
         Name of column with accounting totals/quanties to apply towards the control. If not provided
         then row counts will be used for accounting.
+    sampling_threshold: int, optional, default None
+        If provided, defines the minimum # of agents, e.g. households, that must be present to 
+        sample w/in a semgent. If the threshold is not met the segment constraint will be relaxed
+        and agents would be sampled from a broader pool to match the target.
+    sampling_hierarchy: list of str, optional, default empty list
+        If provided, defines the order in which segment constraints will be relaxed. Should be defined such that
+        less detailed to more detailed segments proceed from left to right, e.g.: ['county', 'city', 'taz'].
+        If not provided, but a 'sampling_threshold' is provided, then the entire pool of agents will be used.
+    keep_outside: bool, optional, default False
+        If True, agents whose attributes fall outside the segments defined in the controls, will be retained.
+        This is intended for cases where the control totals are intended to be applied to a subset of the data.
+
     """
-    def __init__(self, targets, totals_column, accounting_column=None):
+    def __init__(self, 
+                 targets, 
+                 totals_column, 
+                 accounting_column=None, 
+                 sampling_threshold=None, 
+                 sampling_hierarchy=[],
+                 keep_outside=False):
         self.targets = targets
         self.totals_column = totals_column
         self.accounting_column = accounting_column
+        self.sampling_threshold = sampling_threshold
+        self.sampling_hierarchy = sampling_hierarchy
+        self.keep_outside = keep_outside
 
     @property
     def _config_table(self):
