@@ -139,7 +139,9 @@ def concat_indexes(indexes):
     pandas.Index
 
     """
-    return pd.Index(np.concatenate(indexes))
+    if len(indexes) > 0:
+        return pd.Index(np.concatenate(indexes))
+    return pd.Index([])
 
 
 def has_constant_expr(expr):
