@@ -490,3 +490,197 @@ def test_tabular_transition_add_and_remove():
     assert len(new) == totals.total.sum()
     assert added.is_unique is True
     assert new.index.is_unique is True
+
+
+################################
+# TESTS FOR SAMPLING THRESHOLDS
+################################
+
+
+@pytest.fixture
+def st_df():
+    """
+    Data for testing sampling thresholds.
+
+    """
+    return pd.DataFrame(
+        [
+            # case 1 - no agents -- query by city
+            ('Maricopa', 'Chandler', 1,  20, 0),
+            
+            # case 2 -- min threshold met -- query by taz
+            ('Maricopa', 'Chandler', 2, 200, 101),
+
+            # case 3 -- min theshold not met -- but has a decline -- query by taz
+            ('Maricopa', 'Chandler', 3, 30, 40),
+
+            # case 4 -- min threshold no met -- query by county
+            ('Maricopa', 'Tempe', 4, 90, 50),
+
+            # case 5 -- min threshold not net -- query the entire dataset
+            ('Pinal', 'Apache Junction', 5, 120, 95),
+
+            # case 6 -- agents w/out segments in controls table
+            ('NOT CONTROLLED', '', -1, 0, 79)
+        ],
+        columns=['county', 'city', 'taz', 'control', 'agent_cnt']
+    )
+
+
+@pytest.fixture
+def st_controls(st_df, year):
+    """
+    Controls for testing sampling thresholds.
+
+    """
+    controls = st_df.drop(['agent_cnt'], axis=1).query("county != 'NOT CONTROLLED'")
+    controls['year'] = year
+    controls.set_index('year', inplace=True)
+    return controls
+
+
+@pytest.fixture
+def st_controls_accounting(st_controls):
+    st_controls['control'] *= 2
+    return st_controls
+
+
+@pytest.fixture
+def st_agents(st_df):
+    """
+    Agents for testing sampling thresholds
+
+    """
+    agents = st_df.loc[st_df.index.repeat(st_df['agent_cnt'])].drop(['agent_cnt', 'control'], axis=1)
+    agents.reset_index(inplace=True, drop=True)
+    agents.index.name = 'agent_id'
+    agents_bak = agents.copy()
+
+    # for testing accounting column
+    agents['amount'] = 2
+
+    return agents
+
+
+@pytest.fixture
+def st_sampling_hierarchy():
+    """
+    Sampling hiearchy to test with. Should be ordered
+    from left to right, from least to most detiled.
+
+    """
+    return ['county', 'city', 'taz']
+
+
+def check_st_controls(agents, controls,sampling_hierarchy):
+    """
+    Check the agents counts vs. the controls.
+
+    """
+    m = pd.concat({
+        'a': agents.groupby(sampling_hierarchy).size(),
+        'c': controls.groupby(sampling_hierarchy)['control'].sum(),
+    }, axis=1).fillna(-9999)
+    assert (m['a'] == m['c']).all()
+
+
+def test_st_count(year, st_controls, st_agents, st_sampling_hierarchy):
+    """
+    Test sampling thresholds when threshold is expressed as a count.
+
+    """
+    min_threshold = 100
+    tm = transition.TabularTotalsTransition(
+        st_controls, 
+        'control', 
+        sampling_threshold=min_threshold, 
+        sampling_hierarchy=st_sampling_hierarchy
+    )
+    updated, added, copied, removed = tm.transition(st_agents, year)
+    check_st_controls(updated, st_controls, st_sampling_hierarchy)
+
+
+def test_st_keep_outside(year, st_controls, st_agents, st_sampling_hierarchy):
+    """
+    Test w/ the `keep_outside` option set to True. This has the affect 
+    of retaining agents not covered by the control segmentation
+
+    """
+    min_threshold = 100
+    tm = transition.TabularTotalsTransition(
+        st_controls, 
+        'control', 
+        sampling_threshold=min_threshold, 
+        sampling_hierarchy=st_sampling_hierarchy,
+        keep_outside=True
+    )
+    updated, added, copied, removed = tm.transition(st_agents, year)
+    assert len(updated.query("county == 'NOT CONTROLLED'")) == len(st_agents.query("county == 'NOT CONTROLLED'"))
+    check_st_controls(
+        updated.query("county != 'NOT CONTROLLED'"), st_controls, st_sampling_hierarchy)
+
+
+def test_st_ratio(year, st_controls, st_agents, st_sampling_hierarchy):
+    """
+    Test sampling thresholds when threshold is expressed as the maximum
+    ratio between the rows being added and the existing row counts. 
+
+    """
+    threshold = 0.3
+    tm = transition.TabularTotalsTransition(
+        st_controls, 
+        'control', 
+        sampling_threshold=threshold, 
+        sampling_hierarchy=st_sampling_hierarchy
+    )
+    updated, added, copied, removed = tm.transition(st_agents, year)
+    check_st_controls(updated, st_controls, st_sampling_hierarchy)
+
+
+def check_st_controls_accounting(agents, controls, sampling_hierarchy):
+    """
+    Check the agents counts vs. the controls.
+
+    """
+    m = pd.concat({
+        'a': agents.groupby(sampling_hierarchy)['amount'].sum(),
+        'c': controls.groupby(sampling_hierarchy)['control'].sum(),
+    }, axis=1).fillna(-9999)
+    assert (m['a'] == m['c']).all()
+
+
+def test_st_count_w_accounting(year, st_controls_accounting, st_agents, st_sampling_hierarchy):
+    """
+    Test sampling thresholds when threshold is expressed as a count,
+    when using accounting column.
+
+    """
+    min_threshold = 100
+    tm = transition.TabularTotalsTransition(
+        st_controls_accounting, 
+        'control',
+        accounting_column='amount',
+        sampling_threshold=min_threshold, 
+        sampling_hierarchy=st_sampling_hierarchy
+    )
+    updated, added, copied, removed = tm.transition(st_agents, year)
+    check_st_controls_accounting(updated, st_controls_accounting, st_sampling_hierarchy)
+
+
+def test_st_ratio_w_accounting(year, st_controls_accounting, st_agents, st_sampling_hierarchy):
+    """
+    Test sampling thresholds when threshold is expressed as the maximum
+    ratio between the rows being added and the existing row counts, 
+    when using accounting column.
+
+    """
+    threshold = 0.3
+    tm = transition.TabularTotalsTransition(
+        st_controls_accounting, 
+        'control',
+        accounting_column='amount',
+        sampling_threshold=threshold, 
+        sampling_hierarchy=st_sampling_hierarchy
+    )
+    updated, added, copied, removed = tm.transition(st_agents, year)
+    check_st_controls_accounting(updated, st_controls_accounting, st_sampling_hierarchy)
