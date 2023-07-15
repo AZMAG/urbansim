@@ -366,12 +366,30 @@ class TabularGrowthRateTransition(object):
                     # pool of agents to sample from
                     sample_from = subset
 
+                    # query agent pool until threshold is met
                     if self.sampling_threshold is not None:
+
+                        # need to re-query until we reach the minimum threshold
                         ignore_cols = [self._config_column]
                         curr_seg_cols = [[c] if not isinstance(c, (list, tuple)) else c for c in self.sampling_hierarchy]
 
-                        while len(sample_from) < self.sampling_threshold:
-                            # use available segments
+                        while True:
+                            sample_from_cnt = len(sample_from)
+
+                            # check for threshold expressed as a count
+                            if self.sampling_threshold >= 1 and sample_from_cnt >= self.sampling_threshold:
+                                break
+                            
+                            # check for threshold expressed as %/ratio
+                            if sample_from_cnt > 0 and self.sampling_threshold < 1:
+                                pct_of =  nrows / sample_from_cnt
+                                if self.accounting_column is not None:
+                                    pct_of = nrows / sample_from[self.accounting_column].sum()
+                                    
+                                if pct_of <= self.sampling_threshold:
+                                    break
+
+                            # re-query using available segments
                             ignore_cols += curr_seg_cols.pop()
                             sample_from = util.filter_table(data, row, ignore=set(ignore_cols))
                             
