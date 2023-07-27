@@ -600,6 +600,24 @@ def test_st_count(year, st_controls, st_agents, st_sampling_hierarchy):
     check_st_controls(updated, st_controls, st_sampling_hierarchy)
 
 
+def test_st_count_runout_segments(year, st_controls, st_agents, st_sampling_hierarchy):
+    """
+    Test sampling thresholds when threshold is expressed as a count, 
+    when running out segments, occurs when threshold is larger than 
+    the agents in the dataset.
+
+    """
+    min_threshold = 10000
+    tm = transition.TabularTotalsTransition(
+        st_controls, 
+        'control', 
+        sampling_threshold=min_threshold, 
+        sampling_hierarchy=st_sampling_hierarchy
+    )
+    updated, added, copied, removed = tm.transition(st_agents, year)
+    check_st_controls(updated, st_controls, st_sampling_hierarchy)
+
+
 def test_st_keep_outside(year, st_controls, st_agents, st_sampling_hierarchy):
     """
     Test w/ the `keep_outside` option set to True. This has the affect 

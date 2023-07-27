@@ -371,6 +371,7 @@ class TabularGrowthRateTransition(object):
 
                         # need to re-query until we reach the minimum threshold
                         ignore_cols = [self._config_column]
+                        ignore_cols += [c for c in row.index if c not in self.sampling_hierarchy]
                         curr_seg_cols = [[c] if not isinstance(c, (list, tuple)) else c for c in self.sampling_hierarchy]
 
                         while True:
@@ -390,9 +391,16 @@ class TabularGrowthRateTransition(object):
                                     break
 
                             # re-query using available segments
-                            ignore_cols += curr_seg_cols.pop()
-                            sample_from = util.filter_table(data, row, ignore=set(ignore_cols))
-                            
+                            if len(curr_seg_cols) > 0:
+                                ignore_cols += curr_seg_cols.pop()
+                                sample_from = util.filter_table(data, row, ignore=set(ignore_cols))
+                            else:
+                                # exhausted all segments
+                                # ...will be sampling from the entire dataset
+                                logger.warning(
+                                    'Transition Model Warning: not enough agents in the dataset to satify the sampling threshold')
+                                break
+
                         # update segment cols on agents to reflect the control
                         for col in self.sampling_hierarchy:
                             sample_from = sample_from.copy()
