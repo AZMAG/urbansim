@@ -45,7 +45,9 @@ def series_to_yaml_safe(series, ordered=False):
     safe : dict or OrderedDict
 
     """
-    index = series.index.to_native_types(quoting=True)
+    # index = series.index.to_native_types(quoting=True)
+    # Hanyi, to_native_types() is deprecated.
+    index = series.index.astype(str)
     values = series.values.tolist()
 
     if ordered:
